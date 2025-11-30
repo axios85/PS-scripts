@@ -1,25 +1,24 @@
 # =============================================================================
-# SCRIPT DE GENERACIÓN DE LABORATORIO AD PARA PRUEBAS DE GOOGLE WORKSPACE
+# SCRIPT V2: GENERACIÓN DE USUARIOS CON EMAIL (CAMPO MAIL)
 # =============================================================================
 
 # 1. Configuración de la Contraseña
-# Convertimos la contraseña a SecureString como requiere AD
 $PasswordTexto = "#PruebaGsync"
 $PasswordSegura = ConvertTo-SecureString $PasswordTexto -AsPlainText -Force
 
-# 2. Obtener la raíz del dominio actual automáticamente (ej. DC=miempresa,DC=local)
+# 2. Obtener la raíz del dominio
 try {
-    $DomainRoot = (Get-ADDomain).DistinguishedName
-    Write-Host "Dominio detectado: $DomainRoot" -ForegroundColor Green
+    $DomainObj = Get-ADDomain
+    $DomainRoot = $DomainObj.DistinguishedName
+    $DnsRoot = $DomainObj.DNSRoot # Ej: ad.fergava.es
+    Write-Host "Dominio detectado: $DnsRoot ($DomainRoot)" -ForegroundColor Green
 }
 catch {
-    Write-Host "Error: No se puede detectar el dominio. Asegúrate de ejecutar esto en un DC o con RSAT instalado." -ForegroundColor Red
+    Write-Host "Error: No se detecta el dominio. Ejecuta en un DC." -ForegroundColor Red
     Break
 }
 
 # --- Definición de Datos ---
-
-# Definimos las 2 OUs y sus usuarios
 $OUs = @(
     @{
         Name = "GSync_Ventas"
@@ -42,32 +41,28 @@ $OUs = @(
 # --- Ejecución ---
 
 foreach ($OU in $OUs) {
-    
-    # 3. Crear la OU
     $OUName = $OU.Name
     $OUPath = "OU=$OUName,$DomainRoot"
     
-    Write-Host "--- Procesando OU: $OUName ---" -ForegroundColor Cyan
-
-    try {
-        New-ADOrganizationalUnit -Name $OUName -Path $DomainRoot -ErrorAction Stop
-        Write-Host "OU '$OUName' creada exitosamente." -ForegroundColor Green
-    }
-    catch {
-        Write-Host "La OU '$OUName' ya existe o hubo un error. Saltando creación." -ForegroundColor Yellow
+    # Asegurar que la OU existe
+    if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$OUName'")) {
+        New-ADOrganizationalUnit -Name $OUName -Path $DomainRoot
+        Write-Host "OU '$OUName' creada." -ForegroundColor Cyan
     }
 
-    # 4. Crear los 3 Usuarios dentro de esa OU
     foreach ($User in $OU.Users) {
         $FullName = "$($User.First) $($User.Last)"
-        $UPN = "$($User.Account)@$((Get-ADDomain).DNSRoot)" # Genera user@dominio.com
-
+        # Aquí construimos el email igual que el UPN
+        $Email = "$($User.Account)@$DnsRoot" 
+        
         try {
+            # Intentamos crear el usuario CON el campo EmailAddress
             New-ADUser -Name $FullName `
                        -GivenName $User.First `
                        -Surname $User.Last `
                        -SamAccountName $User.Account `
-                       -UserPrincipalName $UPN `
+                       -UserPrincipalName $Email `
+                       -EmailAddress $Email `
                        -Path $OUPath `
                        -AccountPassword $PasswordSegura `
                        -Enabled $true `
@@ -75,16 +70,19 @@ foreach ($OU in $OUs) {
                        -CannotChangePassword $true `
                        -ErrorAction Stop
             
-            Write-Host "   [+] Usuario creado: $FullName ($UPN)" 
+            Write-Host "   [+] Creado: $FullName - Email: $Email" -ForegroundColor Green
         }
         catch {
-            Write-Host "   [!] El usuario '$FullName' ya existe o hubo un error." -ForegroundColor DarkGray
+            # Si el usuario ya existe, LE ACTUALIZAMOS EL EMAIL
+            Write-Host "   [~] El usuario '$FullName' ya existe. Actualizando Email..." -NoNewline
+            try {
+                Set-ADUser -Identity $User.Account -EmailAddress $Email -ErrorAction Stop
+                Write-Host " HECHO ($Email)" -ForegroundColor Yellow
+            }
+            catch {
+                Write-Host " ERROR al actualizar." -ForegroundColor Red
+            }
         }
     }
 }
-
-Write-Host "`n======================================================="
-Write-Host "Proceso finalizado."
-Write-Host "Contraseña asignada: $PasswordTexto"
-Write-Host "Usuarios configurados con: 'PasswordNeverExpires' y 'CannotChangePassword'"
-Write-Host "======================================================="
+Write-Host "`nScript finalizado. Todos los usuarios tienen ahora el campo 'E-mail' lleno."
